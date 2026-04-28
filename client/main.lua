@@ -18,7 +18,7 @@ MenuData.RegisteredTypes['default'] = {
             ak_menubase_action = 'closeMenu',
             ak_menubase_namespace = namespace,
             ak_menubase_name = name,
-          -- ak_menubase_data = data
+            -- ak_menubase_data = data
         })
     end
 }
@@ -36,7 +36,7 @@ function MenuData.Open(menuType, namespace, name, data, submit, cancel, change, 
     menu.change        = change
     menu.data.selected = MenuData.LastSelectedIndex[menu.type .. "_" .. menu.namespace .. "_" .. menu.name] or 0
 
-    menu.close         = function(showRadar, closeSound)
+    menu.close         = function(showRadar, closeSound, triggerCloseEvent)
         MenuData.RegisteredTypes[menuType].close(namespace, name)
 
         for i = 1, #MenuData.Opened, 1 do
@@ -53,6 +53,10 @@ function MenuData.Open(menuType, namespace, name, data, submit, cancel, change, 
 
         if closeSound then
             PlaySoundFrontend("MENU_CLOSE", "HUD_PLAYER_MENU", true, 0)
+        end
+        -- flag to trigger the close event or leave false to not trigger the event, if nil by default will close for backwards compatibility
+        if triggerCloseEvent or triggerCloseEvent == nil then
+            TriggerEvent("vorp_menu:closemenu")
         end
 
         if close then
@@ -126,6 +130,10 @@ function MenuData.Open(menuType, namespace, name, data, submit, cancel, change, 
 
     menu.setTitle             = function(val)
         menu.data.title = val
+    end
+
+    menu.setSubtext           = function(val)
+        menu.data.subtext = val
     end
 
     menu.displayInput         = function(inputConfig, onSubmit, onCancel)
@@ -247,34 +255,30 @@ function MenuData.Open(menuType, namespace, name, data, submit, cancel, change, 
     else
         PlaySoundFrontend("SELECT", "RDRO_Character_Creator_Sounds", true, 0)
     end
+
+    if not data.skipOpenEvent then
+        TriggerEvent("vorp_menu:openmenu")
+    end
     return menu
 end
 
-function MenuData.Close(type, namespace, name)
+function MenuData.Close(type, namespace, name, showRadar, closeSound, trigeerCloseEvent)
     for i = 1, #MenuData.Opened, 1 do
         if MenuData.Opened[i] then
             if MenuData.Opened[i].type == type and MenuData.Opened[i].namespace == namespace and MenuData.Opened[i].name == name then
-                MenuData.Opened[i].close()
+                MenuData.Opened[i].close(showRadar, closeSound, trigeerCloseEvent)
                 MenuData.Opened[i] = nil
             end
         end
     end
 end
 
-function MenuData.CloseAll(showRadar, closeSound)
+function MenuData.CloseAll(showRadar, closeSound, trigeerCloseEvent)
     for i = 1, #MenuData.Opened, 1 do
         if MenuData.Opened[i] then
-            MenuData.Opened[i].close()
+            MenuData.Opened[i].close(showRadar, closeSound, trigeerCloseEvent)
             MenuData.Opened[i] = nil
         end
-    end
-
-    if showRadar then
-        DisplayRadar(true)
-    end
-
-    if closeSound then
-        PlaySoundFrontend("MENU_CLOSE", "HUD_PLAYER_MENU", true, 0)
     end
 end
 
@@ -304,6 +308,44 @@ function MenuData.IsInputActive()
     return MenuData.InputCallbacks ~= nil
 end
 
+function MenuData.RegisterControls(controls, onPress)
+    SendNUIMessage({
+        ak_menubase_action = 'useControls',
+        ak_menubase_controls = controls
+    })
+
+    local isRelease = false
+    RegisterNUICallback('useControlsCallback', function(data, cb)
+        -- if press and hold send only one callback until release is called for optimization
+        if data.type == 'press' then
+            isRelease = false
+        end
+
+        if data.type == 'release' then
+            isRelease = true
+        end
+
+        if data.button then
+            -- for mouse press
+            local button = data.button == 0 and 'left' or data.button == 2 and 'right'
+            data.control = data.control .. '_' .. button
+        end
+
+        repeat
+            onPress(data.control)
+            Wait(0)
+        until isRelease
+
+        cb('ok')
+    end)
+end
+
+function MenuData.UnregisterControls()
+    SendNUIMessage({
+        ak_menubase_action = 'unregisterControls'
+    })
+end
+
 local MenuType = 'default'
 
 RegisterNUICallback('menu_submit', function(data)
@@ -322,6 +364,10 @@ end)
 
 RegisterNUICallback('menu_cancel', function(data)
     local menu = MenuData.GetOpened(MenuType, data._namespace, data._name)
+    if not menu then
+        return print("menu not found", data._namespace, data._name)
+    end
+
     if menu.cancel ~= nil then
         menu.cancel(data, menu)
     end
@@ -329,6 +375,9 @@ end)
 
 RegisterNUICallback('menu_change', function(data)
     local menu = MenuData.GetOpened(MenuType, data._namespace, data._name)
+    if not menu then
+        return print("menu not found", data._namespace, data._name)
+    end
 
     for i = 1, #data.elements, 1 do
         menu.setElement(i, 'value', data.elements[i].value)
@@ -347,15 +396,19 @@ end)
 
 RegisterNUICallback('update_last_selected', function(data)
     local menu = MenuData.GetOpened(MenuType, data._namespace, data._name)
+    if not menu then
+        return print("menu not found", data._namespace, data._name)
+    end
     local menuKey = menu.type .. "_" .. menu.namespace .. "_" .. menu.name
     if data.selected ~= nil then
         MenuData.LastSelectedIndex[menuKey] = data.selected
     end
 end)
 
-RegisterNUICallback('closeui', function(data)
+-- is fired when pressing backspace or right mouse click if enableCursor is true
+RegisterNUICallback('closeui', function()
     TriggerEvent("menuapi:closemenu")
-    TriggerEvent("vorp_menu:closemenu",data) -- new event
+    TriggerEvent("vorp_menu:closemenu")
 end)
 
 RegisterNUICallback('setCursor', function(data, cb)
@@ -427,7 +480,7 @@ CreateThread(function()
             if IsPauseMenuActive() then
                 if not PauseMenuState then
                     PauseMenuState = true
-                    for k, v in pairs(MenuData.GetOpenedMenus()) do
+                    for _, v in pairs(MenuData.GetOpenedMenus()) do
                         table.insert(MenusToReOpen, v)
                     end
                     MenuData.CloseAll()
@@ -437,7 +490,7 @@ CreateThread(function()
             if PauseMenuState and not IsPauseMenuActive() then
                 PauseMenuState = false
                 Wait(1000)
-                for k, v in pairs(MenusToReOpen) do
+                for _, v in pairs(MenusToReOpen) do
                     MenuData.ReOpen(v)
                 end
                 MenusToReOpen = {}
